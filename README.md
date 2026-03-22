@@ -60,3 +60,6 @@ curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash
 You will be asked to authenticate to authenticate to github - The steps should be straight-forward
 
 After the installation is done, you will see the below:- (Probably somnething similar)
+![alt text](nemoclaw_onboarding/Img1.png)
+
+Machine specs can be found <a href="./nemoclaw_onboarding/AWS_EC2_specs_for_Nemoclaw - Google Docs.pdf">here</a>
