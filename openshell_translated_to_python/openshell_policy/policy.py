@@ -1,3 +1,9 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# This file is a derivative work of NVIDIA OpenShell (https://github.com/NVIDIA/OpenShell),
+# translated from Rust to Python for study purposes. Changes were made to the original.
+
 """Sandbox policy YAML parsing and L7 allow/deny rules.
 
 Translated from ``crates/openshell-policy/src/lib.rs`` (3400 lines in Rust).

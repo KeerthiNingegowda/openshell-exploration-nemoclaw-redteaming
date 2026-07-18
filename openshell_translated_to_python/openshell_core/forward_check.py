@@ -1,3 +1,9 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# This file is a derivative work of NVIDIA OpenShell (https://github.com/NVIDIA/OpenShell),
+# translated from Rust to Python for study purposes. Changes were made to the original.
+
 """Local port-forward availability check.
 
 Small helper corresponding to ``openshell_core::forward::check_port_available``
