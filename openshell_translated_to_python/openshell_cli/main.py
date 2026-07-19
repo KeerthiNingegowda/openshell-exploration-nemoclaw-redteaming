@@ -16,6 +16,23 @@ equivalent top-level parser and dispatches the ``sandbox`` subcommands to
 represented structurally; their handlers live in ``run.rs`` in Rust and would
 map to additional modules here.
 
+Ported handlers (live in :func:`_dispatch`):
+- ``sandbox`` / ``sb`` (create, list, delete, connect) -> :mod:`openshell_cli.sandbox_cmds`
+- ``ssh-proxy`` (hidden SSH ProxyCommand helper) -> :mod:`openshell_cli.ssh`
+
+NOT ported (parsed for ``--help`` parity, but ``_dispatch`` returns exit code 2):
+- ``forward`` / ``fwd``   -> Rust ``crates/openshell-cli/src/run.rs`` (forward handler)
+- ``service`` / ``svc``   -> Rust ``crates/openshell-cli/src/run.rs`` (service handler)
+- ``policy``  / ``pol``   -> Rust ``crates/openshell-cli/src/run.rs`` (policy handler)
+- ``provider``            -> Rust ``crates/openshell-cli/src/run.rs`` (provider handler)
+- ``gateway`` / ``gw``    -> Rust ``crates/openshell-cli/src/run.rs`` (gateway handler)
+- ``logs``    / ``lg``    -> Rust ``crates/openshell-cli/src/run.rs`` (logs handler)
+
+Why: this study port goes deep only on the security-critical sandbox lifecycle
+path. The remaining command groups are registered so ``openshell --help`` shows
+the same surface as upstream, but their handlers were intentionally left out of
+scope. Read the Rust ``run.rs`` for their real implementations.
+
 Rust patterns:
 - ``#[derive(Parser)] struct Cli`` / ``#[derive(Subcommand)] enum Commands`` ->
   argparse subparsers.
@@ -147,6 +164,10 @@ async def _dispatch(args: argparse.Namespace) -> int:
         await ssh.sandbox_ssh_proxy_by_name(server, args.name, _TLS_PLACEHOLDER)
         return 0
 
+    # Reached by forward / service / policy / provider / gateway / logs. These are
+    # registered in build_parser() only for `--help` parity with upstream; their
+    # real handlers live in Rust `crates/openshell-cli/src/run.rs` and are out of
+    # scope for this sandbox-focused study port. See module docstring for the list.
     print(f"command '{args.command}' is registered but its handler is not ported", file=sys.stderr)
     return 2
 
