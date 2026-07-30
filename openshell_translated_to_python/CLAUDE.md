@@ -8,6 +8,24 @@ A **study-only Python translation** of [NVIDIA OpenShell](https://github.com/NVI
 
 The upstream Rust source lives at `/tmp/OpenShell/crates/` (cloned from `git@github.com:NVIDIA/OpenShell.git`) and is the reference for all translation work.
 
+## This repo translates the *internals* — not to be confused with the upstream Python SDK
+
+OpenShell is a hybrid project, and there are **two** distinct kinds of Python in play. Keep them separate:
+
+1. **This repo** — a study translation of OpenShell's **Rust internals** (the engine): gateway core, config, secrets, policy, drivers, TUI. It exists to make the *internal architecture* legible. It is not a client and not runnable.
+
+2. **Upstream [`/python`](https://github.com/NVIDIA/OpenShell/tree/main/python)** — NVIDIA's **official, first-class Python SDK for clients** (`openshell` package, docstring: *"Agent execution and management SDK"*). It is **not** a reimplementation of the core; it is a thin **gRPC client** to the gateway, the same architectural layer as the Rust CLI. It imports generated proto stubs (`openshell_pb2_grpc`, `inference_pb2_grpc`) and exposes `SandboxClient`, `Sandbox`, `SandboxSession`, `WorkspaceClient`, `InferenceRouteClient`, with `create()` / `exec()` / `exec_python()` / `from_active_cluster()` and TLS/mTLS + bearer-token auth.
+
+**The layering:**
+
+| Layer | Language | Role |
+|---|---|---|
+| Gateway, core, drivers, proxy, seccomp/VFIO | Rust | Engine + authority — **the internals this repo translates** |
+| Official SDK (`/python`) | Python (real) | **Client only** — drives the gateway programmatically |
+| CLI (`openshell-cli`) | Rust | Another client of the same gateway |
+
+Implications: the upstream SDK is **already Python — nothing to translate**, and per this repo's rules it is a real client that must never be wired to real creds. Do not vendor or "translate" it here. Treat it only as a **reference** for how a client is meant to authenticate and call the gateway (the real auth flow that `auth.py` / `jwt.py` only sketch).
+
 ## Honest assessment of this translation
 
 **Where it works well:** The pure logic modules — `secrets.py`, `policy.py`, `config.py`, `gpu.py` — translate nearly 1:1 and are genuinely easier to read in Python. The placeholder-rewriting security pattern and L7 policy rule model come through clearly. For learning *what* OpenShell does and *why*, these files are more approachable than the Rust originals.
