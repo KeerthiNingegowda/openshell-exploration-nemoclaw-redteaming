@@ -159,8 +159,6 @@ echo "After group, x=$x"
 
 
 
-
-
 echo "Hello. How are you?"
 
 #Create a simple variable and print it
