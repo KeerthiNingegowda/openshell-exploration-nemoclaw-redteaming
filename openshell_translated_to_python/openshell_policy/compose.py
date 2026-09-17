@@ -33,6 +33,46 @@ def is_provider_rule_name(rule_name: str) -> bool:
     return rule_name.startswith(PROVIDER_RULE_NAME_PREFIX)
 
 
+def generated_rule_name(host: str, port: int) -> str:
+    """Deterministic rule name for a single host:port (Rust ``merge::generated_rule_name``).
+
+    ``.`` and ``-`` become ``_``; any remaining non-alphanumeric/underscore chars
+    are dropped. e.g. ``("api.github.com", 443)`` -> ``allow_api_github_com_443``.
+    """
+    replaced = host.replace(".", "_").replace("-", "_")
+    sanitized = "".join(c for c in replaced if c.isalnum() or c == "_")
+    return f"allow_{sanitized}_{port}"
+
+
+def canonicalize_advisor_add_rule(
+    base_policy: SandboxPolicy,
+    effective_policy: SandboxPolicy,
+    requested_rule_name: str,
+    incoming_rule: NetworkPolicyRule,
+) -> tuple[str, NetworkPolicyRule]:
+    """Canonicalize an advisor-proposed single-endpoint add-rule.
+
+    When the incoming rule is a single endpoint with exactly one host and one
+    port (and at least one binary), upstream folds it onto the deterministic
+    :func:`generated_rule_name` and merges with any existing contract for that
+    host:port. Anything else is returned unchanged. The full contract-merge
+    logic is summarized here.
+
+    Real implementation:
+      crates/openshell-policy/src/merge.rs — canonicalize_advisor_add_rule
+    """
+    endpoints = getattr(incoming_rule, "endpoints", []) or []
+    binaries = getattr(incoming_rule, "binaries", []) or []
+    if len(endpoints) != 1 or not binaries:
+        return requested_rule_name, incoming_rule
+    endpoint = endpoints[0]
+    host = (getattr(endpoint, "host", "") or "").strip()
+    ports = getattr(endpoint, "ports", []) or []
+    if not host or len(ports) != 1:
+        return requested_rule_name, incoming_rule
+    return generated_rule_name(host, ports[0]), incoming_rule
+
+
 def provider_rule_name(provider_name: str) -> str:
     """Sanitize a provider name into a reserved ``_provider_<slug>`` key.
 

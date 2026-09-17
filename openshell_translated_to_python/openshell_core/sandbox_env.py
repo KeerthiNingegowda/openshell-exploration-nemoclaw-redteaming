@@ -22,6 +22,10 @@ originate from gateway-supplied identity material or from Kubernetes.
 
 from __future__ import annotations
 
+import base64
+import json
+from dataclasses import dataclass, field
+
 # Name of the sandbox (used for policy sync and identification).
 # NOTE: this is the sandbox *name*, not a boolean "am I sandboxed" flag.
 SANDBOX = "OPENSHELL_SANDBOX"
@@ -38,8 +42,119 @@ SSH_SOCKET_PATH = "OPENSHELL_SSH_SOCKET_PATH"
 # Log level for the sandbox supervisor (e.g. "debug", "info", "warn").
 LOG_LEVEL = "OPENSHELL_LOG_LEVEL"
 
-# Shell command to run inside the sandbox.
-SANDBOX_COMMAND = "OPENSHELL_SANDBOX_COMMAND"
+# Versioned specification for the exact canonical main process. Replaces the
+# former OPENSHELL_SANDBOX_COMMAND string. Most drivers use JSON directly;
+# transports that cannot preserve spaces in environment values may use the
+# "base64url:"-prefixed representation. See MainProcessConfig below.
+MAIN_PROCESS_SPEC = "OPENSHELL_MAIN_PROCESS_SPEC"
+
+_MAIN_PROCESS_SPEC_BASE64URL_PREFIX = "base64url:"
+
+
+@dataclass
+class MainProcessConfig:
+    """Lossless driver-to-supervisor representation of the canonical process.
+
+    An empty ``command`` means "no command supplied": the supervisor asks the
+    sandbox boundary to resolve the default login shell against the agent image.
+    A non-empty command is the exact program+args and is run verbatim.
+    """
+
+    version: int
+    command: list[str]
+    tty: bool
+    await_main_process_attachment: bool = False
+
+    # The single supported wire version.
+    VERSION = 1
+
+    @classmethod
+    def scratch(cls) -> "MainProcessConfig":
+        """Default config for a sandbox created without a command.
+
+        The command is left empty on purpose: the sandbox boundary picks a login
+        shell that exists in the agent image (bash when present, else ``/bin/sh``).
+        A TTY is requested because the default is an interactive login shell.
+        """
+        return cls(version=cls.VERSION, command=[], tty=True, await_main_process_attachment=False)
+
+    @classmethod
+    def from_driver_spec(cls, spec) -> "MainProcessConfig":
+        """Build from a ``DriverSandboxSpec`` proto (or ``None``).
+
+        A spec with a non-empty command is copied verbatim; otherwise (missing
+        spec or empty command) falls back to :meth:`scratch`.
+        """
+        if spec is not None and getattr(spec, "command", None):
+            return cls(
+                version=cls.VERSION,
+                command=list(spec.command),
+                tty=bool(spec.tty),
+                await_main_process_attachment=bool(
+                    getattr(spec, "await_main_process_attachment", False)
+                ),
+            )
+        return cls.scratch()
+
+    @classmethod
+    def decode(cls, encoded: str) -> "MainProcessConfig":
+        """Decode the versioned transport without shell interpretation.
+
+        Accepts either raw JSON or the ``base64url:``-prefixed form. Raises
+        ``ValueError`` on malformed input, unsupported version, or a
+        present-but-blank program (an empty command list, however, is valid).
+        """
+        if encoded.startswith(_MAIN_PROCESS_SPEC_BASE64URL_PREFIX):
+            payload = encoded[len(_MAIN_PROCESS_SPEC_BASE64URL_PREFIX) :]
+            try:
+                json_str = base64.urlsafe_b64decode(_pad_b64(payload)).decode("utf-8")
+            except (ValueError, UnicodeDecodeError) as error:
+                raise ValueError(f"invalid {MAIN_PROCESS_SPEC} base64url/UTF-8: {error}") from error
+        else:
+            json_str = encoded
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid {MAIN_PROCESS_SPEC}: {error}") from error
+        config = cls(
+            version=int(data["version"]),
+            command=list(data.get("command", [])),
+            tty=bool(data.get("tty", False)),
+            await_main_process_attachment=bool(data.get("await_main_process_attachment", False)),
+        )
+        if config.version != cls.VERSION:
+            raise ValueError(f"unsupported {MAIN_PROCESS_SPEC} version {config.version}")
+        # Empty command is valid ("no command supplied"); only a present-but-blank
+        # program is rejected.
+        if config.command and config.command[0] == "":
+            raise ValueError(f"{MAIN_PROCESS_SPEC} command program must not be empty")
+        return config
+
+    @classmethod
+    def encode_driver_spec(cls, spec) -> str:
+        """Encode the versioned driver-to-supervisor transport as JSON."""
+        return json.dumps(cls.from_driver_spec(spec).to_dict(), separators=(",", ":"))
+
+    @classmethod
+    def encode_driver_spec_base64url(cls, spec) -> str:
+        """Encode the versioned transport without whitespace (constrained env vars)."""
+        payload = base64.urlsafe_b64encode(cls.encode_driver_spec(spec).encode("utf-8"))
+        stripped = payload.rstrip(b"=").decode("ascii")  # URL_SAFE_NO_PAD
+        return f"{_MAIN_PROCESS_SPEC_BASE64URL_PREFIX}{stripped}"
+
+    def to_dict(self) -> dict:
+        return {
+            "version": self.version,
+            "command": self.command,
+            "tty": self.tty,
+            "await_main_process_attachment": self.await_main_process_attachment,
+        }
+
+
+def _pad_b64(payload: str) -> bytes:
+    """Restore ``=`` padding stripped by URL_SAFE_NO_PAD before decoding."""
+    return (payload + "=" * (-len(payload) % 4)).encode("ascii")
+
 
 # Deployment-controlled telemetry toggle propagated to the sandbox supervisor.
 TELEMETRY_ENABLED = "OPENSHELL_TELEMETRY_ENABLED"
@@ -48,8 +163,22 @@ TELEMETRY_ENABLED = "OPENSHELL_TELEMETRY_ENABLED"
 # supervisor path omits it.
 SUPERVISOR_TOPOLOGY = "OPENSHELL_SUPERVISOR_TOPOLOGY"
 
+# The isolation backend admitted by the deployment configuration (RFC 0012).
+# Delivered on a channel separate from the topology descriptor so descriptor
+# verification against the admitted backend is not self-referential. Required
+# whenever a topology descriptor is supplied.
+ADMITTED_ISOLATION_BACKEND = "OPENSHELL_ADMITTED_ISOLATION_BACKEND"
+
 # Network enforcement backend selected by the compute driver.
 NETWORK_ENFORCEMENT_MODE = "OPENSHELL_NETWORK_ENFORCEMENT_MODE"
+
+# Comma-separated runtime networking capabilities supplied by the compute driver.
+# Capabilities describe substrate the shared supervisor may activate; they never
+# move policy evaluation into the driver.
+NETWORK_RUNTIME_CAPABILITIES = "OPENSHELL_NETWORK_RUNTIME_CAPABILITIES"
+
+# Driver capability for policy-gated DNS and transparent TCP interception.
+POLICY_DNS_TRANSPARENT_TCP_CAPABILITY = "policy-dns-transparent-tcp"
 
 # Whether network policy evaluation must bind requests to the peer binary.
 # Default when unset is "required". Kubernetes sidecar experiments may set this
@@ -68,6 +197,17 @@ GATEWAY_TLS_SERVER_NAME = "OPENSHELL_GATEWAY_TLS_SERVER_NAME"
 # Directory where the network supervisor writes the proxy CA files consumed by
 # workload child processes.
 PROXY_TLS_DIR = "OPENSHELL_PROXY_TLS_DIR"
+
+# Optional path to a durable PEM-encoded interception CA certificate. Must be
+# configured together with PROXY_CA_KEY.
+PROXY_CA_CERT = "OPENSHELL_PROXY_CA_CERT"
+
+# Optional path to the private key for PROXY_CA_CERT. Must be configured together
+# with the certificate path.
+PROXY_CA_KEY = "OPENSHELL_PROXY_CA_KEY"
+
+# Whether the control-owned SSH Unix socket is shared across trusted UIDs.
+SSH_SOCKET_SHARED = "OPENSHELL_SSH_SOCKET_SHARED"
 
 # Path to the CA certificate for mTLS communication with the gateway.
 TLS_CA = "OPENSHELL_TLS_CA"
