@@ -26,8 +26,12 @@ from . import (
     paths,
     policy,
     provider_credentials,
+    rpc_error,
     sandbox_env,
+    sandbox_generation,
+    sandbox_session,
     secrets,
+    secrets_body,
     time,
 )
 
@@ -44,8 +48,12 @@ __all__ = [
     "paths",
     "policy",
     "provider_credentials",
+    "rpc_error",
     "sandbox_env",
+    "sandbox_generation",
+    "sandbox_session",
     "secrets",
+    "secrets_body",
     "time",
     "VERSION",
 ]

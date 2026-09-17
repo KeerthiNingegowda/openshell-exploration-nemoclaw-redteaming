@@ -39,7 +39,17 @@ DEFAULT_DOCKER_NETWORK_NAME = "openshell-docker"
 DEFAULT_SERVICE_ROUTING_DOMAIN = "openshell.localhost"
 DEFAULT_SUPERVISOR_IMAGE_REPO = "ghcr.io/nvidia/openshell/supervisor"
 CDI_GPU_DEVICE_ALL = "nvidia.com/gpu=all"
+# Operator-assigned default name for a gateway installation.
+DEFAULT_GATEWAY_NAME = "openshell"
+# Default cgroup PID limit for local container sandboxes.
 DEFAULT_SANDBOX_PIDS_LIMIT = 2048
+# Default sandbox runtime image repository (distinct from the supervisor repo).
+DEFAULT_SANDBOX_RUNTIME_IMAGE_REPO = "ghcr.io/nvidia/openshell/sandbox"
+
+
+def default_sandbox_pids_limit() -> int | None:
+    """Typed default PID limit (Rust ``Option<NonZeroI64>``); ``None`` if zero."""
+    return DEFAULT_SANDBOX_PIDS_LIMIT or None
 
 
 def resolve_supervisor_image_tag(candidates: list[str]) -> str:
@@ -65,8 +75,162 @@ def default_supervisor_image() -> str:
     return f"{DEFAULT_SUPERVISOR_IMAGE_REPO}:{tag}"
 
 
+def _default_supervisor_image_tag() -> str:
+    return resolve_supervisor_image_tag(
+        [os.environ.get("OPENSHELL_IMAGE_TAG", ""), os.environ.get("IMAGE_TAG", "")]
+    )
+
+
+def default_sandbox_runtime_image() -> str:
+    """Default sandbox runtime image reference with a version-pinned tag."""
+    return f"{DEFAULT_SANDBOX_RUNTIME_IMAGE_REPO}:{_default_supervisor_image_tag()}"
+
+
+class PolicyValidationFailureMode(Enum):
+    """Gateway posture when a sandbox rejects a candidate policy generation."""
+
+    # Deactivate the previous policy and deny new egress until a valid
+    # generation is loaded. (Rust ``#[default]``.)
+    FAIL_CLOSED = "fail_closed"
+    # Keep the last valid generation active when a newer candidate fails
+    # validation. Startup still fails closed when no valid generation exists.
+    RETAIN_LAST_VALID = "retain_last_valid"
+
+    @classmethod
+    def default(cls) -> "PolicyValidationFailureMode":
+        return cls.FAIL_CLOSED
+
+    @classmethod
+    def from_str(cls, value: str) -> "PolicyValidationFailureMode":
+        for member in cls:
+            if member.value == value:
+                return member
+        raise ValueError(
+            f"invalid policy validation failure mode '{value}'; "
+            "expected fail_closed or retain_last_valid"
+        )
+
+
+class ImagePullPolicy(Enum):
+    """Canonical policy controlling when a driver pulls a sandbox image."""
+
+    ALWAYS = "always"
+    IF_NOT_PRESENT = "if_not_present"  # Rust ``#[default]``
+    NEVER = "never"
+    NEWER = "newer"
+
+    @classmethod
+    def default(cls) -> "ImagePullPolicy":
+        return cls.IF_NOT_PRESENT
+
+    def __str__(self) -> str:
+        return self.value
+
+    @classmethod
+    def from_str(cls, value: str) -> "ImagePullPolicy":
+        for member in cls:
+            if member.value == value:
+                return member
+        raise ValueError(f"invalid image pull policy '{value}'")
+
+
+@dataclass
+class AppArmorProfile:
+    """AppArmor profile selection (Rust enum with a ``Localhost(String)`` case).
+
+    Modeled as a tagged dataclass: ``kind`` is one of ``runtime_default`` /
+    ``unconfined`` / ``localhost``; ``profile`` is set only for ``localhost``.
+    """
+
+    kind: str
+    profile: str | None = None
+
+    @classmethod
+    def runtime_default(cls) -> "AppArmorProfile":
+        return cls("runtime_default")
+
+    @classmethod
+    def unconfined(cls) -> "AppArmorProfile":
+        return cls("unconfined")
+
+    @classmethod
+    def localhost(cls, profile: str) -> "AppArmorProfile":
+        return cls("localhost", profile)
+
+    def kubernetes_type(self) -> str:
+        return {
+            "runtime_default": "RuntimeDefault",
+            "unconfined": "Unconfined",
+            "localhost": "Localhost",
+        }[self.kind]
+
+    def localhost_profile(self) -> str | None:
+        return self.profile if self.kind == "localhost" else None
+
+    def oci_security_opt(self) -> str | None:
+        """OCI ``apparmor=<profile>`` option.
+
+        ``RuntimeDefault`` returns ``None``: omitting the OCI option asks
+        Docker/Podman to apply their runtime default profile.
+        """
+        if self.kind == "runtime_default":
+            return None
+        if self.kind == "unconfined":
+            return "apparmor=unconfined"
+        return f"apparmor={self.profile}"
+
+
+@dataclass
+class UpstreamProxyConfig:
+    """Backend-independent upstream (egress) proxy configuration.
+
+    Credential contents are never read or put into error messages here; drivers
+    validate and stage them per sandbox.
+    """
+
+    https_proxy: str | None = None
+    no_proxy: str | None = None
+    proxy_auth_file: Path | None = None
+    proxy_auth_allow_insecure: bool | None = None
+    proxy_connect_by_hostname: bool | None = None
+
+    def validate(self) -> None:
+        """Validate relationships independent of the container backend.
+
+        Rejects an empty ``https_proxy`` and inline credentials (which must be
+        supplied via ``proxy_auth_file`` so they are never stored in config or
+        runtime metadata). The URL parsing lives in ``driver_utils`` upstream;
+        here we perform the study-relevant structural checks.
+
+        Real implementation:
+          crates/openshell-core/src/config.rs — UpstreamProxyConfig::validate
+          (delegates to crate::driver_utils::parse_upstream_proxy_url)
+        """
+        url = self.https_proxy
+        if url is not None:
+            if url == "":
+                raise ValueError("https_proxy must not be empty when set")
+            # Inline credentials look like scheme://user:pass@host.
+            after_scheme = url.split("://", 1)[-1]
+            if "@" in after_scheme.split("/", 1)[0]:
+                raise ValueError(
+                    "https_proxy must not embed credentials; supply them with "
+                    "proxy_auth_file so they are not stored in configuration or "
+                    "runtime metadata"
+                )
+
+
 class ComputeDriverKind(Enum):
-    """Compute backends the gateway can orchestrate sandboxes through."""
+    """Compute backends the gateway can orchestrate sandboxes through.
+
+    NOTE: upstream removed ``ComputeDriverKind`` and the ``detect_driver`` /
+    ``detect_*_socket`` family from ``openshell-core::config`` (they are no longer
+    present in that module). The gateway now stores an optional ``compute_driver``
+    *string* (``None`` = runtime auto-detection). This enum and the detection
+    helpers below are retained here because the driver translation
+    (``openshell_drivers``) still imports them; treat them as a compatibility
+    shim, not a mirror of current core config.
+    """
 
     KUBERNETES = "kubernetes"
     VM = "vm"
@@ -262,6 +426,18 @@ class GatewayInterceptorConfig:
     max_patches: int | None = None
     binding_policy: GatewayInterceptorBindingPolicy = GatewayInterceptorBindingPolicy.DYNAMIC
     bindings: list = field(default_factory=list)
+    # Explicit JWT audience for this interceptor; empty/None derives one from name.
+    audience: str | None = None
+
+    def resolved_audience(self) -> str:
+        """The configured ``audience``, else a name-derived default.
+
+        Mirrors the Rust ``Cow`` return: the explicit non-empty audience, or
+        ``urn:openshell:extension:interceptor:<name>``.
+        """
+        if self.audience:
+            return self.audience
+        return f"urn:openshell:extension:interceptor:{self.name}"
 
 
 @dataclass
@@ -272,7 +448,13 @@ class GatewayJwtConfig:
     public_key_path: Path
     kid_path: Path
     gateway_id: str = "openshell"
-    ttl_secs: int = 3600  # 0 disables expiration (local single-player only)
+    # Rust changed this to ``Option<NonZeroU64>``: None/0 disables expiration
+    # (local single-player only).
+    ttl_secs: int | None = 3600
+
+    def sandbox_token_ttl(self) -> int | None:
+        """TTL in seconds (Rust ``Option<Duration>``); ``None`` disables expiry."""
+        return self.ttl_secs if self.ttl_secs else None
 
 
 @dataclass
@@ -293,6 +475,12 @@ class Config:
     health_bind_address: str | None = None
     metrics_bind_address: str | None = None
     log_level: str = "info"
+    # Operator-assigned name for this gateway installation.
+    name: str = DEFAULT_GATEWAY_NAME
+    # Security posture for rejected sandbox policy generations.
+    policy_validation_failure_mode: PolicyValidationFailureMode = field(
+        default_factory=PolicyValidationFailureMode.default
+    )
     tls: TlsConfig | None = None
     oidc: OidcConfig | None = None
     auth: GatewayAuthConfig = field(default_factory=GatewayAuthConfig)
@@ -301,9 +489,31 @@ class Config:
     mtls_auth: MtlsAuthConfig = field(default_factory=MtlsAuthConfig)
     gateway_jwt: GatewayJwtConfig | None = None
     database_url: str = ""
-    compute_drivers: list[str] = field(default_factory=list)
+    # Upstream replaced the ``compute_drivers`` list with a single optional
+    # ``compute_driver`` string (``None`` = runtime auto-detection).
+    compute_driver: str | None = None
+    credential_drivers: list[str] = field(default_factory=list)
+    default_credential_driver: str | None = None
     compute_driver_endpoints: dict[str, Path] = field(default_factory=dict)
     ssh_session_ttl_secs: int = 0
     grpc_rate_limit_requests: int | None = None
     grpc_rate_limit_window_secs: int | None = None
     service_routing: ServiceRoutingConfig = field(default_factory=ServiceRoutingConfig)
+
+    # ---- builder-style helpers (Rust ``with_*``) --------------------------
+    def with_name(self, name: str) -> "Config":
+        self.name = name
+        return self
+
+    def with_compute_driver(self, driver) -> "Config":
+        """Set the single compute driver (replaces the former ``with_compute_drivers``)."""
+        self.compute_driver = str(driver)
+        return self
+
+    def with_credential_drivers(self, drivers) -> "Config":
+        self.credential_drivers = [str(d) for d in drivers]
+        return self
+
+    def with_default_credential_driver(self, driver: str | None) -> "Config":
+        self.default_credential_driver = driver
+        return self

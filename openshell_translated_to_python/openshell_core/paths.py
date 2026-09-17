@@ -22,11 +22,19 @@ from pathlib import Path, PurePosixPath
 from .error import ConfigError
 
 
-def _env_dir(var: str, *fallback: str) -> Path:
-    """Return ``$var`` if set, else ``$HOME`` joined with ``fallback``."""
+def _env_dir(var: str, *fallback: str, windows_var: str | None = None) -> Path:
+    """Return ``$var`` if set, else the Windows fallback, else ``$HOME``/``fallback``.
+
+    The ``windows_var`` fallback mirrors the Rust ``#[cfg(target_os = "windows")]``
+    branch, consulted only on Windows before falling back to ``$HOME``.
+    """
     value = os.environ.get(var)
     if value:
         return Path(value)
+    if windows_var and os.name == "nt":
+        win_value = os.environ.get(windows_var)
+        if win_value:
+            return Path(win_value)
     home = os.environ.get("HOME")
     if not home:
         raise ConfigError("HOME is not set")
@@ -34,8 +42,8 @@ def _env_dir(var: str, *fallback: str) -> Path:
 
 
 def xdg_config_dir() -> Path:
-    """``$XDG_CONFIG_HOME`` or ``$HOME/.config``."""
-    return _env_dir("XDG_CONFIG_HOME", ".config")
+    """``$XDG_CONFIG_HOME``, else ``%APPDATA%`` on Windows, else ``$HOME/.config``."""
+    return _env_dir("XDG_CONFIG_HOME", ".config", windows_var="APPDATA")
 
 
 def openshell_config_dir() -> Path:
@@ -43,7 +51,7 @@ def openshell_config_dir() -> Path:
 
 
 def xdg_state_dir() -> Path:
-    return _env_dir("XDG_STATE_HOME", ".local", "state")
+    return _env_dir("XDG_STATE_HOME", ".local", "state", windows_var="LOCALAPPDATA")
 
 
 def openshell_state_dir() -> Path:
@@ -51,7 +59,7 @@ def openshell_state_dir() -> Path:
 
 
 def xdg_data_dir() -> Path:
-    return _env_dir("XDG_DATA_HOME", ".local", "share")
+    return _env_dir("XDG_DATA_HOME", ".local", "share", windows_var="LOCALAPPDATA")
 
 
 def create_dir_restricted(path: Path) -> None:
@@ -93,8 +101,12 @@ def normalize_path(path: str) -> str:
     """Lexically normalize a path (no filesystem access, no symlink resolution).
 
     Collapses redundant separators and ``.`` components and strips trailing
-    slashes. ``..`` is preserved verbatim — validation catches it separately,
-    exactly like the Rust implementation.
+    slashes. ``..`` is preserved verbatim — validation catches it separately.
+
+    NOTE: upstream moved authored-policy path normalization into
+    ``openshell-policy-schema``; ``paths.rs`` now only re-exports it
+    (``pub use openshell_policy_schema::normalize_path``). This translation keeps
+    the implementation inline since the policy-schema crate is not translated.
     """
     p = PurePosixPath(path)
     parts: list[str] = []

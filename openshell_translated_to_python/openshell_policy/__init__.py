@@ -14,10 +14,19 @@ YAML sandbox policy parsing/serialization and the L7 allow/deny rule model
 from .compose import (
     PROVIDER_RULE_NAME_PREFIX,
     ProviderPolicyLayer,
+    canonicalize_advisor_add_rule,
     compose_effective_policy,
+    generated_rule_name,
     is_provider_rule_name,
     provider_rule_name,
     strip_provider_rule_names,
+)
+from .validate import (
+    EndpointAmbiguity,
+    PolicyValidationError,
+    find_endpoint_ambiguities,
+    parse_sandbox_policy_file,
+    validate_and_canonicalize_sandbox_policy,
 )
 from .policy import (
     L7Allow,
@@ -47,4 +56,11 @@ __all__ = [
     "is_provider_rule_name",
     "provider_rule_name",
     "strip_provider_rule_names",
+    "canonicalize_advisor_add_rule",
+    "generated_rule_name",
+    "EndpointAmbiguity",
+    "PolicyValidationError",
+    "find_endpoint_ambiguities",
+    "parse_sandbox_policy_file",
+    "validate_and_canonicalize_sandbox_policy",
 ]

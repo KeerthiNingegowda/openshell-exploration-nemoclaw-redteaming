@@ -73,9 +73,13 @@ def build_container_spec(sandbox, config, token_secret: str | None = None, gpu_d
         sandbox_env.ENDPOINT: getattr(config, "gateway_endpoint", "") or "",
         sandbox_env.SSH_SOCKET_PATH: "/run/openshell/ssh.sock",
     }
-    command = getattr(spec, "command", None) if spec else None
-    if command:
-        env[sandbox_env.SANDBOX_COMMAND] = " ".join(command)
+    # Upstream replaced the plain OPENSHELL_SANDBOX_COMMAND string with a
+    # versioned, argv-preserving MainProcessConfig transport (JSON, or a
+    # base64url form for env transports that cannot preserve spaces). We emit the
+    # base64url form here to match constrained container-env delivery.
+    env[sandbox_env.MAIN_PROCESS_SPEC] = sandbox_env.MainProcessConfig.encode_driver_spec_base64url(
+        spec
+    )
 
     body: dict = {
         "name": container_name(name),

@@ -9,14 +9,24 @@
 Translated from ``crates/openshell-core/src/metadata.rs``.
 
 Rust defines traits (``ObjectId``, ``ObjectName``, ``ObjectLabels``,
-``GetResourceVersion``, ``SetResourceVersion``) and implements them for each
-proto resource type (``Sandbox``, ``Provider``, ``SshSession`` ...). Every impl
-just reaches into the object's optional ``metadata`` sub-message.
+``GetResourceVersion``, ``SetResourceVersion``, ``ObjectWorkspace``) and
+implements them for each proto resource type. Every impl just reaches into the
+object's optional ``metadata`` sub-message.
+
+The resource types carrying these impls upstream are now: ``Sandbox``,
+``SandboxWorkloadTemplate``, ``Workspace``, ``Provider``, ``SshSession``,
+``ServiceEndpoint``, ``WorkspaceMember`` (and ``ObjectForTest``). Upstream
+dropped ``InferenceRoute``, ``StoredProviderProfile`` and
+``StoredProviderCredentialRefreshState`` from this set and added
+``SandboxWorkloadTemplate``.
 
 Python doesn't need per-type impls: duck typing lets one set of free functions
 work for any object that carries a ``metadata`` (with ``id``/``name``/``labels``/
-``resource_version``) and optional ``status``. We expose the traits as
-:class:`typing.Protocol` classes for documentation, plus these accessors.
+``resource_version``/``workspace``) and optional ``status``. We expose the traits
+as :class:`typing.Protocol` classes for documentation, plus these accessors.
+``requires_workspace`` is a per-type constant in Rust and is not expressible via
+duck typing; callers that need it should consult the resource-type list above
+(``Workspace`` returns ``False``; workspace-scoped types return ``True``).
 """
 
 from __future__ import annotations
@@ -50,6 +60,17 @@ def object_labels(obj: Any) -> dict[str, str] | None:
         return None
     labels = getattr(meta, "labels", None)
     return dict(labels) if labels is not None else None
+
+
+def object_workspace(obj: Any) -> str:
+    """Rust ``ObjectWorkspace::object_workspace``.
+
+    Workspace-scoped resources return their ``metadata.workspace``; the
+    ``Workspace`` resource itself returns ``""`` (it is not nested in another
+    workspace).
+    """
+    meta = getattr(obj, "metadata", None)
+    return getattr(meta, "workspace", "") if meta is not None else ""
 
 
 def get_resource_version(obj: Any) -> int:

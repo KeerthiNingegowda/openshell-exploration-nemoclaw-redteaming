@@ -42,6 +42,20 @@ class LandlockCompatibility(Enum):
     HARD_REQUIREMENT = "hard_requirement"
 
 
+# Accepted ``landlock.compatibility`` values in their proto string form. Single
+# source of truth shared by YAML parsing, proto→runtime conversion, and gateway
+# policy validation so the accepted set cannot drift.
+LANDLOCK_COMPATIBILITY_VALUES = ("best_effort", "hard_requirement")
+
+
+def is_valid_landlock_compatibility(value: str) -> bool:
+    """True if ``value`` is an accepted ``landlock.compatibility`` string.
+
+    The empty string is accepted and defaults to ``best_effort``.
+    """
+    return value == "" or value in LANDLOCK_COMPATIBILITY_VALUES
+
+
 @dataclass
 class FilesystemPolicy:
     read_only: list[str] = field(default_factory=list)
@@ -76,11 +90,23 @@ class LandlockPolicy:
 
     @classmethod
     def from_proto(cls, proto) -> "LandlockPolicy":
-        compat = (
-            LandlockCompatibility.HARD_REQUIREMENT
-            if getattr(proto, "compatibility", "") == "hard_requirement"
-            else LandlockCompatibility.BEST_EFFORT
-        )
+        """Rust ``TryFrom<ProtoLandlockPolicy>``.
+
+        Upstream tightened this from an infallible ``From`` (which silently
+        defaulted unknown values to ``BestEffort``) to a validating ``TryFrom``:
+        an unrecognized ``compatibility`` string now raises instead of being
+        accepted.
+        """
+        raw = getattr(proto, "compatibility", "")
+        if raw in ("", "best_effort"):
+            compat = LandlockCompatibility.BEST_EFFORT
+        elif raw == "hard_requirement":
+            compat = LandlockCompatibility.HARD_REQUIREMENT
+        else:
+            raise ValueError(
+                f"invalid landlock.compatibility {raw!r}; accepted: "
+                f"{', '.join(LANDLOCK_COMPATIBILITY_VALUES)}"
+            )
         return cls(compatibility=compat)
 
 
@@ -110,8 +136,9 @@ class SandboxPolicy:
         """Rust ``TryFrom<ProtoSandboxPolicy>``.
 
         In cluster mode we always run with proxy networking so all egress can be
-        evaluated by OPA and ``inference.local`` is always addressable — hence
-        the network mode is hardcoded to PROXY here, matching the Rust source.
+        evaluated by OPA — hence the network mode is hardcoded to PROXY here,
+        matching the Rust source. A malformed landlock compatibility value now
+        propagates as a ``ValueError`` (upstream ``TryFrom`` change).
         """
         network = NetworkPolicy(mode=NetworkMode.PROXY, proxy=ProxyPolicy(http_addr=None))
         fs = getattr(proto, "filesystem", None)
