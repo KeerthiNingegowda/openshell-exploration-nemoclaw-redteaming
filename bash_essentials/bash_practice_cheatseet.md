@@ -9,6 +9,7 @@ $$    # PID of the current process (a ( ... ) subshell gets a different PID; $BA
 $?    # Exit status of the most recently run command (0 = success)
 $#    # Count of positional arguments
 $@    # All positional arguments (always quote it: "$@")
+$*    #
 $1 $2 # Positional arguments - bash has no named parameters
 ```
 
